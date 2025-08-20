@@ -4,28 +4,30 @@ require("dotenv").config();
 const session = require("express-session");
 const passport = require("passport");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
+const { google } = require("googleapis"); // ✅ Only import once
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5050;
 
-// Session middleware
+// Middleware
+app.use(cors());
 app.use(
   session({
     secret: "calendarhub",
     resave: false,
     saveUninitialized: true,
     cookie: {
-      secure: false, // true if using HTTPS
+      secure: false,
       httpOnly: true,
-      sameSite: "lax", // <- Add this
+      sameSite: "none",
     },
   })
 );
 
-// Passport init
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Google OAuth strategy
 passport.use(
   new GoogleStrategy(
     {
@@ -35,18 +37,16 @@ passport.use(
     },
     function (accessToken, refreshToken, profile, cb) {
       console.log("✅ Logged in user:", profile.displayName);
-      console.log("📛 Google ID:", profile.id);
-      console.log("🔑 Access Token:", accessToken);
       profile.accessToken = accessToken;
       return cb(null, profile);
     }
   )
 );
 
-passport.serializeUser((user, done) => done(null, user)); // Return user object
-passport.deserializeUser((obj, done) => done(null, obj)); // Return user object
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((obj, done) => done(null, obj));
 
-// OAuth login route
+// Routes
 app.get(
   "/auth/google",
   passport.authenticate("google", {
@@ -54,12 +54,10 @@ app.get(
   })
 );
 
-// OAuth callback
 app.get(
   "/auth/google/callback",
   passport.authenticate("google", { failureRedirect: "/" }),
   (req, res) => {
-    console.log("🔄 Auth Callback: req.user = ", req.user);
     if (!req.user) {
       return res.status(401).send("❌ Unauthorized");
     }
@@ -67,7 +65,6 @@ app.get(
   }
 );
 
-// Temporary endpoint/route to view session info for DEBUGGING purposes
 app.get("/profile", (req, res) => {
   if (!req.user) {
     return res.status(401).send("❌ Not logged in");
@@ -78,7 +75,35 @@ app.get("/profile", (req, res) => {
   });
 });
 
-// Basic route
+// ✅ Only one /events route
+app.get("/events", async (req, res) => {
+  if (!req.user || !req.user.accessToken) {
+    return res.status(401).send("❌ Not authenticated");
+  }
+
+  const oauth2Client = new google.auth.OAuth2();
+  oauth2Client.setCredentials({
+    access_token: req.user.accessToken,
+  });
+
+  const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+
+  try {
+    const response = await calendar.events.list({
+      calendarId: "primary",
+      timeMin: new Date().toISOString(),
+      maxResults: 10,
+      singleEvents: true,
+      orderBy: "startTime",
+    });
+
+    res.json(response.data.items);
+  } catch (err) {
+    console.error("❌ Failed to fetch events:", err);
+    res.status(500).send("Failed to fetch calendar events");
+  }
+});
+
 app.get("/", (req, res) => {
   res.send("✅ Calendar API is running!");
 });
